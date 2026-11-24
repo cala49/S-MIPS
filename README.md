@@ -1,91 +1,90 @@
-# S-MIPS: layout para implementar la CPU
+# S-MIPS — CPU multiciclo de 32 bits
 
-Placa de Logisim Evolution 5.0.0 lista para que se implemente dentro una CPU **multiciclo** de S-MIPS. La placa (memoria, terminal, reloj, reset y halt) ya está resuelta; el subcircuito `CPU` está vacío, solo con su interfaz.
+Proyecto de Arquitectura de Computadoras, Facultad de Matemática y Computación, Universidad de La Habana, curso 2026–2027.
+
+Implementación de una CPU **S-MIPS multiciclo** sobre la placa proporcionada para **Logisim Evolution 5.0.0**. La memoria, el terminal y los controles de la placa pertenecen al diseño base del proyecto; el trabajo desarrollado se concentra en el procesador.
+
+## Arquitectura
+
+El circuito principal se encuentra en [`circuit/smips.circ`](circuit/smips.circ).
+
+| Subcircuito | Función |
+| `CPU` | Interconecta las unidades de procesamiento y control con la interfaz de la placa. |
+| `Datapath` | Contiene PC, IR, registros temporales, multiplexores, extensores, banco de registros, ALU y rutas de memoria. |
+| `Instruction_Decoder` | Identifica instrucciones a partir de `OPCODE` y, cuando corresponde, `FUNCT`. |
+| `Control_Unit` | Máquina de estados finitos para la secuencia multiciclo y señales de control. |
+| `Branch_Control` | Evalúa las condiciones de salto `BEQ` y `BNE` con la señal `ZERO`. |
+| `ALU` | Operaciones ADD, SUB, AND, OR, SLT, SLL y SRL. |
+| `Register_File` | Banco de 32 registros de 32 bits, con dos puertos de lectura y uno de escritura. |
+
+### Versión inicial: VHDL
+
+En esta versión, **`ALU` y `Register_File` están implementados en VHDL**; los demás subcircuitos están construidos con componentes de Logisim Evolution. Para simular la CPU completa con estos dos componentes es necesario configurar un simulador VHDL compatible (Questa) y su licencia.
+
+Planeo desarrollar una version donde implemento estos componentes en logisim.
+
+## Instrucciones decodificadas
+
+- **Aritmética y lógica de registros:** `add`, `addu`, `sub`, `and`, `or`, `slt`, `sll`, `srl`.
+- **Aritmética y lógica inmediata:** `addi`, `addiu`, `andi`, `ori`, `slti`.
+- **Memoria:** `lw`, `sw`, `lb`, `lbu`, `sb`.
+- **Control de flujo:** `beq`, `bne`, `j`, `jal`, `jr`.
+- **Sistema:** `syscall`.
+
+## Memoria y servicios de sistema
+
+Se conserva la interfaz original de la placa, incluida la memoria de 16 KiB con habilitación por byte. El procesador utiliza direcciones de byte y el orden de bytes es *little-endian*.
+
+Después de `RESET`, los valores requeridos son `PC = 0x0000`, `$gp = 0x1800`, `$sp = 0x3FFC` y `$zero = 0`.
+
+Los servicios de sistema previstos son:
+
+- **`$v0 = 10`:** activar `HALT` y detener la ejecución.
+- **`$v0 = 11`:** imprimir el carácter de `$a0[6:0]` por la interfaz TTY (7 bits).
+
+## Estructura del repositorio
 
 ```text
-SMIPS-Layout/
-├── docs/guide.pdf          Orientación y especificación completa del proyecto (fuente: guide.tex)
-├── circuit/smips.circ      Circuitos Board, CPU (vacío) y Memory
-├── programs/               Programas .asm: ejemplos (hello, array_sum, gcd, multiply) y pruebas de instrucciones (arithmetic, memory, branches)
-├── tests/                  (la crea el estudiante) programas de prueba propios: sección 7 de guide.pdf
-├── images/                 Imágenes de memoria generadas desde los .asm
-├── open.sh                 Abre el circuito en Logisim (con Questa si la CPU usa VHDL)
-└── tools/                  assemble.py (MARS → imagen), run_tests.py (compara con MARS), build.py
+circuit/smips.circ       Circuito principal de Logisim
+programs/               Ejemplos proporcionados en el repositorio base
+tests/                  Pruebas adicionales propias en ensamblador S-MIPS
+images/                 Imágenes de memoria generadas para los programas
+tools/                  Ensamblador y herramientas de comprobación
+docs/guide.pdf          Especificación oficial del proyecto
+README.md               Documentación de esta implementación
 ```
 
-**La especificación del proyecto está en [`docs/guide.pdf`](docs/guide.pdf).** Este archivo solo resume la placa y el flujo de trabajo.
+## Preparación y ejecución
 
-## 1. Circuitos
+**Herramientas:** Logisim Evolution 5.0.0, Java 21 o superior, Python 3 y MARS 4.5. La versión con VHDL requiere además Questa configurado con licencia para ejecutar los componentes VHDL.
 
-| Circuito | Contenido | ¿Se modifica? |
-|---|---|---|
-| `Board` (principal) | Reloj, botón Reset, CPU, Memory, TTY y LED Halt, conectados por túneles | No |
-| `CPU` | Solo los pines de la interfaz | **Sí: aquí se implementa la CPU** |
-| `Memory` | RAM nativa de 4096 × 32 bits con habilitación por bytes | No |
+1. Ensamblar un programa de prueba desde la raíz del repositorio:
 
-No se requiere Questa para usar la placa: todo es nativo de Logisim.
-
-## 2. Interfaz de la CPU
-
-| Pin | Dir. | Ancho | Significado |
-|---|---|---|---|
-| `CLK` | entrada | 1 | Reloj de la placa. Memoria y TTY actúan en el flanco de subida. |
-| `RESET` | entrada | 1 | Botón Reset (1 mientras está pulsado). |
-| `MEM_RDATA` | entrada | 32 | Palabra alineada que contiene la dirección `MEM_ADDR`. Llega en el **mismo ciclo** (lectura combinacional). |
-| `MEM_ADDR` | salida | 32 | Dirección de byte. La memoria ignora los bits 1..0 y lee/escribe la palabra alineada. |
-| `MEM_WDATA` | salida | 32 | Dato a escribir, ya colocado en su carril de byte. |
-| `MEM_BE` | salida | 4 | Habilitación por byte: el bit *k* escribe `MEM_WDATA[8k+7..8k]`. `sw` → `1111`; `sb` → un solo bit, según `MEM_ADDR[1..0]`. |
-| `MEM_WE` | salida | 1 | Con 1, la memoria escribe en el próximo flanco de subida de `CLK`. |
-| `TTY_DATA` | salida | 7 | Código ASCII del carácter a imprimir. |
-| `TTY_WE` | salida | 1 | Con 1, el TTY imprime `TTY_DATA` en el próximo flanco de subida. Debe durar **un ciclo** por carácter. |
-| `HALT` | salida | 1 | Enciende el LED Halt (`syscall` 10). |
-
-La memoria es *little-endian*: el byte de la dirección `4n + k` es `MEM_RDATA[8k+7..8k]` al leer la palabra `4n`. Por tanto, `lb`/`lbu` deben seleccionar el byte con `MEM_ADDR[1..0]` y extenderlo, y `sb` debe replicar o desplazar el byte al carril correcto. Ese trabajo es de la CPU.
-
-## 3. Mapa de memoria
-
-Corresponde a la configuración **«Compact, Text at Address 0»** de MARS (*Settings → Memory Configuration*):
-
-| Región | Dirección |
-|---|---|
-| `.text` (PC inicial) | `0x0000` |
-| `$gp` inicial | `0x1800` |
-| `.data` | `0x2000` |
-| `$sp` inicial | `0x3FFC` |
-
-La memoria tiene 16 KiB (`0x0000`–`0x3FFF`). Las direcciones superiores se repiten cada 16 KiB. Al hacer reset, la CPU debe poner PC = 0, `$sp` = `0x3FFC`, `$gp` = `0x1800` y el resto de registros a 0, como hace MARS. El botón Reset no borra la memoria.
-
-## 4. Servicios `syscall`
-
-| `$v0` | Servicio | Efecto en la placa |
-|---|---|---|
-| 11 | imprimir carácter | `TTY_DATA ← $a0[6..0]`, `TTY_WE = 1` durante un ciclo |
-| 10 | terminar | `HALT = 1`; la CPU deja de avanzar |
-| otro | — | sin efecto: continúa con la instrucción siguiente |
-
-Una instrucción ilegal detiene la CPU igual que `syscall` 10. Los detalles están en `docs/guide.pdf`.
-
-## 5. Ejecutar un programa
-
-1. Ensamblar (requiere Java y MARS 4.5; ruta configurable con `MARS_JAR`):
    ```bash
-   python3 tools/assemble.py programs/hello.asm
+   python tools/assemble.py tests/test_arithmetic.asm
    ```
-   Genera `images/hello.hex` con `.text` desde `0x0000` y `.data` desde `0x2000`. Avisa si el código contiene instrucciones fuera de S-MIPS.
-2. Abrir `circuit/smips.circ` en Logisim Evolution 5.0.0.
-3. Entrar en `Memory` desde la simulación (pestaña **Simulate** del panel izquierdo → `Board` → `Memory`, o clic derecho sobre el bloque en la placa → **View Memory**), hacer clic derecho en la RAM → **Load Image…** y elegir `images/hello.hex`. No abrirla desde la lista de la pestaña **Design**: así se edita una copia aislada y la placa no ve la imagen.
-4. Volver a `Board`, pulsar **Reset** con la herramienta de la mano y activar los ticks del reloj.
 
-## 6. Regenerar el circuito
+2. Abrir `circuit/smips.circ` en Logisim Evolution.
+3. Acceder a la instancia de `Memory` desde la simulación de `Board` y cargar la imagen `.hex` generada con **Load Image...**. No cargar la imagen en una copia aislada de `Memory` desde el panel de diseño.
+4. Volver a `Board`, activar `RESET` y avanzar el reloj.
 
-`python3 tools/build.py` reconstruye `circuit/smips.circ` desde cero (necesita Java 21 y el JAR de Logisim 5.0.0 en `LOGISIM_JAR`). **Sobrescribe el archivo**: no lo ejecutes sobre una copia en la que ya se haya implementado la CPU.
-
-## 7. Comprobar la CPU
+La herramienta proporcionada por el proyecto permite ejecutar las pruebas y comparar la salida del TTY con MARS:
 
 ```bash
-bash open.sh                                     # abre circuit/smips.circ (activa la simulación VHDL si hace falta)
-python3 tools/run_tests.py                       # programs/*.asm y tests/*.asm: TTY comparado con MARS
-python3 tools/run_tests.py programs/memory.asm # un solo programa
+python tools/run_tests.py
 ```
 
-`run_tests.py` ensambla cada programa, obtiene la salida esperada con MARS, lo ejecuta en la placa y compara el texto del TTY. Requiere Java 21, MARS y Logisim 5.0.0 (`LOGISIM_JAR`, `MARS_JAR`); si la CPU tiene entidades VHDL, también Questa con licencia (`QUESTA_BIN`, `SALT_LICENSE_SERVER`), y entonces la simulación es más lenta.
+La ejecución automática requiere que las rutas de Java, MARS y Logisim estén configuradas; en esta versión también es necesario contar con Questa y una licencia válida.
+
+**Advertencia:** no ejecutar `python tools/build.py` sobre este circuito: esa herramienta regenera `circuit/smips.circ` y puede sobrescribir la implementación.
+
+## Pruebas propias
+
+Las pruebas añadidas en `tests/` intentan detectar fallos de ejecución y muestran `OK` o `FAIL` por TTY antes de terminar mediante `syscall 10`:
+
+| Archivo | Objetivo 
+| `test_arithmetic.asm` | Suma, resta, AND, OR y SLT. 
+| `test_memory_bytes.asm` | `sw`, `lw`, `sb`, `lb` y `lbu` con byte de signo negativo. 
+| `test_branches.asm` | `beq`, `bne`, `j` y control de flujo. 
+
+La especificación de referencia está en [`docs/guide.pdf`](docs/guide.pdf) y en el [repositorio original del proyecto](https://github.com/UH-Matcom-AC/Proyecto-S-MIPS-2026-2027).
