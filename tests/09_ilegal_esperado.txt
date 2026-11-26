@@ -1,0 +1,3 @@
+TTY: vacio
+HALT: 1 al detectar codigo op=0x3F
+Registro $t0: 0

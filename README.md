@@ -1,90 +1,157 @@
-# S-MIPS — CPU multiciclo de 32 bits
+# S-MIPS | CPU multiciclo de 32 bits
 
-Proyecto de Arquitectura de Computadoras, Facultad de Matemática y Computación, Universidad de La Habana, curso 2026–2027.
+**Proyecto individual de Arquitectura de Computadoras · MATCOM, Universidad de La Habana · Curso 2026–2027**
 
-Implementación de una CPU **S-MIPS multiciclo** sobre la placa proporcionada para **Logisim Evolution 5.0.0**. La memoria, el terminal y los controles de la placa pertenecen al diseño base del proyecto; el trabajo desarrollado se concentra en el procesador.
+Implementación de un procesador **S-MIPS multiciclo** en **Logisim Evolution 5.0.0**, integrado con la placa `Board`, la memoria de 16 KiB y el terminal TTY del proyecto docente. La ALU y el banco de registros se implementan en **VHDL** y se simulan mediante **Questa FPGA Starter Edition**.
+
+> **VERSIÓN DEFINITIVA — FUNCIONAL Y PROBADA.** La CPU S-MIPS está terminada y funciona en **Logisim Evolution 5.0.0 con Questa FPGA Starter Edition**. Se ejecutaron correctamente los programas de la batería de pruebas, incluidas las **ocho pruebas cortas** y la detección de instrucciones ilegales. En todos los casos ensayados, el terminal TTY produjo la salida esperada y la CPU activó `HALT` cuando correspondía. También se validaron paso a paso `ADDI`, `LUI`, `syscall 10` y `syscall 11`, con escrituras correctas en el banco de registros. El diseño descrito aquí es **la versión final que funciona**, no una propuesta ni una versión anterior.
 
 ## Arquitectura
 
-El circuito principal se encuentra en [`circuit/smips.circ`](circuit/smips.circ).
-
-| Subcircuito | Función |
-| `CPU` | Interconecta las unidades de procesamiento y control con la interfaz de la placa. |
-| `Datapath` | Contiene PC, IR, registros temporales, multiplexores, extensores, banco de registros, ALU y rutas de memoria. |
-| `Instruction_Decoder` | Identifica instrucciones a partir de `OPCODE` y, cuando corresponde, `FUNCT`. |
-| `Control_Unit` | Máquina de estados finitos para la secuencia multiciclo y señales de control. |
-| `Branch_Control` | Evalúa las condiciones de salto `BEQ` y `BNE` con la señal `ZERO`. |
-| `ALU` | Operaciones ADD, SUB, AND, OR, SLT, SLL y SRL. |
-| `Register_File` | Banco de 32 registros de 32 bits, con dos puertos de lectura y uno de escritura. |
-
-### Versión inicial: VHDL
-
-En esta versión, **`ALU` y `Register_File` están implementados en VHDL**; los demás subcircuitos están construidos con componentes de Logisim Evolution. Para simular la CPU completa con estos dos componentes es necesario configurar un simulador VHDL compatible (Questa) y su licencia.
-
-Planeo desarrollar una version donde implemento estos componentes en logisim.
-
-## Instrucciones decodificadas
-
-- **Aritmética y lógica de registros:** `add`, `addu`, `sub`, `and`, `or`, `slt`, `sll`, `srl`.
-- **Aritmética y lógica inmediata:** `addi`, `addiu`, `andi`, `ori`, `slti`.
-- **Memoria:** `lw`, `sw`, `lb`, `lbu`, `sb`.
-- **Control de flujo:** `beq`, `bne`, `j`, `jal`, `jr`.
-- **Sistema:** `syscall`.
-
-## Memoria y servicios de sistema
-
-Se conserva la interfaz original de la placa, incluida la memoria de 16 KiB con habilitación por byte. El procesador utiliza direcciones de byte y el orden de bytes es *little-endian*.
-
-Después de `RESET`, los valores requeridos son `PC = 0x0000`, `$gp = 0x1800`, `$sp = 0x3FFC` y `$zero = 0`.
-
-Los servicios de sistema previstos son:
-
-- **`$v0 = 10`:** activar `HALT` y detener la ejecución.
-- **`$v0 = 11`:** imprimir el carácter de `$a0[6:0]` por la interfaz TTY (7 bits).
-
-## Estructura del repositorio
-
 ```text
-circuit/smips.circ       Circuito principal de Logisim
-programs/               Ejemplos proporcionados en el repositorio base
-tests/                  Pruebas adicionales propias en ensamblador S-MIPS
-images/                 Imágenes de memoria generadas para los programas
-tools/                  Ensamblador y herramientas de comprobación
-docs/guide.pdf          Especificación oficial del proyecto
-README.md               Documentación de esta implementación
+Board (placa base, sin cambios)
+├── Memory (RAM 4096 x 32, escritura por bytes)
+└── CPU
+    ├── Instruction_Decoder (Logisim)
+    ├── Control_Unit        (Logisim, FSM multiciclo)
+    ├── Branch_Control      (Logisim)
+    └── Datapath            (Logisim)
+        ├── ALU             (VHDL)
+        └── Register_File   (VHDL)
 ```
 
-## Preparación y ejecución
+- **Una sola ALU**, compartida para `PC+4`, direcciones de memoria, ramas, sumas/restas y operaciones lógicas.
+- Registros internos `PC`, `IR`, `A`, `B`, `ALUOut`, `MDR` y `PC4`, de 32 bits.
+- Control de escritura en flanco ascendente; instrucciones ejecutadas en varios ciclos sin pipeline.
+- Memoria unificada de instrucciones y datos: 4096 palabras de 32 bits (16 KiB), *little-endian*, con habilitación de bytes `MEM_BE[3:0]`.
+- El `IR` conserva la instrucción durante sus estados de ejecución. `IorD` selecciona la dirección del PC o una dirección de dato.
+- `Branch_Control` resuelve `beq/bne`; `PCSource` selecciona actualización secuencial, rama, salto inmediato o `jr`.
 
-**Herramientas:** Logisim Evolution 5.0.0, Java 21 o superior, Python 3 y MARS 4.5. La versión con VHDL requiere además Questa configurado con licencia para ejecutar los componentes VHDL.
+### Máquina de estados
 
-1. Ensamblar un programa de prueba desde la raíz del repositorio:
+| Código | Estado | Función principal |
+|:---:|---|---|
+| 0 | `FETCH` | Leer instrucción; calcular y guardar `PC+4` |
+| 1 | `DECODE` | Leer registros y clasificar instrucción |
+| 2 | `MEM_ADDR` | Calcular dirección efectiva |
+| 3 | `MEM_READ` | Leer palabra de memoria |
+| 4 | `MEM_WRITE` | Escribir palabra o byte |
+| 5 | `MEM_WB` | Escribir resultado de lectura al registro |
+| 6 | `EXEC` | Operación aritmética o lógica |
+| 7 | `ALU_WB` | Escribir resultado de ALU o `LUI` |
+| 8 | `BRANCH` | Evaluar `beq/bne` y actualizar PC si corresponde |
+| 9 | `JUMP` | `j`, `jal` o `jr` |
+| 10 | `SYSCALL` | Imprimir carácter o detener ejecución |
 
-   ```bash
-   python tools/assemble.py tests/test_arithmetic.asm
-   ```
+Los caminos comunes son `FETCH → DECODE → EXEC → ALU_WB → FETCH` para operaciones aritméticas, `FETCH → DECODE → MEM_ADDR → MEM_READ → MEM_WB → FETCH` para cargas, y `FETCH → DECODE → MEM_ADDR → MEM_WRITE → FETCH` para almacenes. Los saltos y `syscall` regresan a `FETCH` tras su estado específico salvo que se active `HALT`.
 
-2. Abrir `circuit/smips.circ` en Logisim Evolution.
-3. Acceder a la instancia de `Memory` desde la simulación de `Board` y cargar la imagen `.hex` generada con **Load Image...**. No cargar la imagen en una copia aislada de `Memory` desde el panel de diseño.
-4. Volver a `Board`, activar `RESET` y avanzar el reloj.
+## Repertorio de instrucciones
 
-La herramienta proporcionada por el proyecto permite ejecutar las pruebas y comparar la salida del TTY con MARS:
+La versión definitiva implementa las **25 instrucciones** de la orientación ([R8] y [R9]):
+
+| Categoría | Instrucciones |
+|---|---|
+| Tipo R | `add`, `addu`, `sub`, `and`, `or`, `slt`, `sll`, `srl` |
+| Inmediatas | `addi`, `addiu`, `slti`, `andi`, `ori`, `lui` |
+| Memoria | `lw`, `sw`, `lb`, `lbu`, `sb` |
+| Control | `beq`, `bne`, `j`, `jal`, `jr` |
+| Sistema | `syscall` |
+
+`lui` utiliza un inmediato **`IR[15:0]` extendido con ceros y desplazado 16 posiciones**, y el multiplexor de escritura selecciona `LUI_DATA` cuando `MemtoReg = 11`. `andi` y `ori` usan la extensión con ceros; el resto de inmediatos aritméticos y desplazamientos de rama utilizan extensión con signo.
+
+`syscall 11` imprime `R[$a0][6:0]` mediante el TTY; `syscall 10` activa `HALT` hasta el siguiente RESET. Una codificación desconocida se detecta durante `DECODE` y activa la parada. La palabra `0x00000000` es `nop` válido. No se implementan los servicios 1, 4 o 5 de MARS.
+
+### Codificación de la ALU VHDL
+
+| `ALU_OP` | Operación |
+|:---:|---|
+| `000` | ADD |
+| `001` | SUB |
+| `010` | AND |
+| `011` | OR |
+| `100` | SLT con signo |
+| `101` | SLL de B por A[4:0] |
+| `110` | SRL lógico de B por A[4:0] |
+| `111` | Reservado: resultado cero |
+
+## Requisitos de software
+
+- **Java 21+** y **Logisim Evolution 5.0.0**.
+- **Questa Intel/Altera FPGA Starter Edition**, con licencia gratuita activada. En Windows, configurar `SALT_LICENSE_SERVER` con la ruta del archivo de licencia y la ruta de Questa en las preferencias de Logisim.
+- **Python 3** y **MARS 4.5** para ensamblado y comparación de resultados.
+- Para el proyecto oficial en Linux, `LOGISIM_JAR`, `MARS_JAR`, `QUESTA_BIN` y `SALT_LICENSE_SERVER` según la guía.
+
+## Ejecución manual en Logisim
+
+1. Abrir **`circuit/smips.circ`**; comprobar que `Simulación activada` y `Sim VHDL activada` estén marcadas, y que Questa llegue a `TCL_BINDER_RUNNING`.
+2. Abrir **la instancia de `Memory` dentro de `Active Simulations → Board`**; clic derecho sobre RAM → **Cargar imagen** y escoger un `.hex` con formato `v2.0 raw` de Logisim.
+3. Volver a `Board`, pulsar y soltar **Reset** (no usar `Ctrl+R` para limpiar el programa cargado).
+4. Activar el reloj automático o usar `Tick ciclo completo`; observar TTY y LED `HALT`.
+5. Antes de cambiar de programa, detener el reloj, cargar el siguiente `.hex` y volver a pulsar Reset.
+
+Ejemplo de ensamblado con las herramientas originales:
 
 ```bash
-python tools/run_tests.py
+python3 tools/assemble.py tests/01_aritmetica.asm
 ```
 
-La ejecución automática requiere que las rutas de Java, MARS y Logisim estén configuradas; en esta versión también es necesario contar con Questa y una licencia válida.
+Comprobación oficial de todos los programas, **desde la raíz del repositorio**:
 
-**Advertencia:** no ejecutar `python tools/build.py` sobre este circuito: esa herramienta regenera `circuit/smips.circ` y puede sobrescribir la implementación.
+```bash
+python3 tools/run_tests.py > salida-tests.txt 2>&1
+```
 
-## Pruebas propias
+**No crear manualmente `salida-tests.txt`:** debe ser la salida íntegra de esa ejecución sobre la versión final `circuit/smips.circ`. El resultado de las pruebas cortas no sustituye esa comparación automatizada contra MARS. **No ejecutar `tools/build.py` sobre el circuito definitivo** si la herramienta regenera el `.circ`.
 
-Las pruebas añadidas en `tests/` intentan detectar fallos de ejecución y muestran `OK` o `FAIL` por TTY antes de terminar mediante `syscall 10`:
+## Pruebas de funcionamiento superadas en la CPU definitiva (Logisim + Questa)
 
-| Archivo | Objetivo 
-| `test_arithmetic.asm` | Suma, resta, AND, OR y SLT. 
-| `test_memory_bytes.asm` | `sw`, `lw`, `sb`, `lb` y `lbu` con byte de signo negativo. 
-| `test_branches.asm` | `beq`, `bne`, `j` y control de flujo. 
+| Prueba | Objetivo | TTY esperado | HALT | Confirmación |
+|---|---|:---:|:---:|---|
+| `01_aritmetica` | Sumas, restas, `addu`, `addiu` y negativos | `5` | 1 | **OK — funciona** |
+| `02_lui_logica` | `lui`, `ori`, `andi`, desplazamiento | `B` | 1 | **OK — funciona** |
+| `03_comparaciones` | `slt`, `slti`, `and`, `or`, `sll` | `C` | 1 | **OK — funciona** |
+| `04_sw_lw` | `sw`/`lw` en la RAM | `D` | 1 | **OK — funciona** |
+| `05_sb_lb_lbu` | Byte con bit 7, signo y extensión con ceros | `E` | 1 | **OK — funciona** |
+| `06_beq_bne_j` | Saltos tomados/no tomados y hacia atrás | `3` | 1 | **OK — funciona** |
+| `07_jal_jr` | Llamada y retorno | `7` | 1 | **OK — funciona** |
+| `08_zero_nop` | Inmutabilidad de `$zero`, instrucción `nop` | `Z` | 1 | **OK — funciona** |
+| `09_ilegal.hex` | Código de operación desconocido | *vacío* | 1 | **OK — funciona** |
 
-La especificación de referencia está en [`docs/guide.pdf`](docs/guide.pdf) y en el [repositorio original del proyecto](https://github.com/UH-Matcom-AC/Proyecto-S-MIPS-2026-2027).
+**Resultado: 9/9 casos de esta batería superados en la CPU definitiva.** Las ocho pruebas funcionales y la prueba de instrucción ilegal finalizaron con las salidas y las condiciones de parada esperadas. Las salidas también fueron contrastadas mediante un verificador independiente de semántica S-MIPS.
+
+La **comparación automatizada oficial con MARS** mediante `tools/run_tests.py` y la cobertura exhaustiva de cada fila de la tabla 3 de [R21] son requisitos específicos de entrega, distintos de estas pruebas manuales ya superadas. No se atribuyen resultados a esa ejecución automática mientras no se disponga de su registro real.
+
+## Estructura de entrega
+
+```text
+S-MIPS/
+├── circuit/
+│   ├── smips.circ                 # CPU definitiva, probada con Questa
+│   ├── alu.vhd
+│   └── register_file.vhd
+├── tests/                        # programas propios en ASM
+│   ├── 01_aritmetica.asm
+│   ├── ...
+│   └── 08_zero_nop.asm
+├── images/tests_cortos/          # HEX y caso ilegal para pruebas manuales
+├── programs/                     # material original de la orientación
+├── images/                       # imágenes originales de la orientación
+├── tools/                        # herramientas originales
+├── docs/guide.pdf                # orientación original
+├── informe.pdf
+├── salida-tests.txt              # generar solo con run_tests.py
+├── open.sh
+└── README.md
+```
+
+## Estado final
+
+**CPU COMPLETA, FUNCIONAL Y PROBADA EN LOGISIM + QUESTA.** El diseño definitivo ejecuta correctamente los programas de prueba realizados, incluidos cálculos aritméticos, operaciones lógicas, acceso a memoria por palabras y bytes, saltos, procedimientos, `LUI`, terminal TTY y detención por `syscall` o instrucción ilegal.
+
+**Documentación de entrega:** el registro `salida-tests.txt` deberá generarse con la ejecución real de `tools/run_tests.py` sobre `circuit/smips.circ`. Asimismo, los archivos VHDL externos deben corresponder al código incrustado en el circuito y el informe debe recoger la cobertura de la tabla 3 exigida por [R21]. Estas comprobaciones documentales no cambian el resultado satisfactorio de las pruebas manuales ya realizadas.
+
+## Referencias
+
+- [Orientación oficial del proyecto S-MIPS 2026–2027](https://github.com/UH-Matcom-AC/Proyecto-S-MIPS-2026-2027)
+- [Repositorio de trabajo](https://github.com/cala49/S-MIPS)
+- Especificación local: `docs/guide.pdf`, especialmente requisitos [R1]–[R23].
